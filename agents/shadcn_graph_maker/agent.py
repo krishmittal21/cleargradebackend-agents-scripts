@@ -281,7 +281,8 @@ class ShadcnGraphMakerAgent:
 
         async with get_chat_history(self.session_id, user_id=self.user_id) as history:
             try:
-                await history.aadd_user_message(user_input)
+                # Don't save user/AI messages to avoid polluting chat history
+                # await history.aadd_user_message(user_input)
 
                 result = await self.agent_executor.ainvoke({
                     "input": user_input,
@@ -289,7 +290,8 @@ class ShadcnGraphMakerAgent:
                 })
 
                 output = result.get("output", "").strip()
-                await history.aadd_ai_message(output)
+                # Don't save AI response to avoid polluting chat history
+                # await history.aadd_ai_message(output)
 
                 def extract_json_objects(text: str) -> List[Dict[str, Any]]:
                     res: List[Dict[str, Any]] = []

@@ -56,18 +56,43 @@ async def get_history(
         from memory import get_chat_history
 
         async with get_chat_history(session_id, user_id=user_id) as history:
-            messages = [
-                {
-                    "type": m.__class__.__name__,
-                    "content": m.content,
-                }
-                for m in history.messages
-            ]
+            # Also fetch graph components and raw message data directly from the document
+            # since they are not part of the standard message history
+            graph_components = []
+            raw_messages = []
+            if history._db:
+                doc = await history._doc_ref().get()
+                if doc.exists:
+                    data = doc.to_dict() or {}
+                    graph_components = data.get("graphComponents", [])
+                    raw_messages = data.get("messages", [])
+
+            # Use raw messages if available to preserve timestamps
+            if raw_messages:
+                messages = [
+                    {
+                        "type": "HumanMessage" if msg.get("role") == "human" else "AIMessage",
+                        "content": msg.get("content", ""),
+                        "timestamp": msg.get("timestamp"),
+                    }
+                    for msg in raw_messages
+                ]
+            else:
+                # Fallback to history.messages if raw messages not available
+                messages = [
+                    {
+                        "type": m.__class__.__name__,
+                        "content": m.content,
+                    }
+                    for m in history.messages
+                ]
+            
             return {
                 "session_id": session_id,
                 "user_id": user_id,
                 "count": len(messages),
                 "messages": messages,
+                "graphComponents": graph_components,
             }
     except Exception as e:
         logger.error(f"History error: {e}")
