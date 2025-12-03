@@ -46,6 +46,34 @@ async def chat(req: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=500, detail="Chat failed")
 
 
+@app.post("/chat/stream")
+async def chat_stream(req: ChatRequest):
+    """Stream chat responses in real-time."""
+    from fastapi.responses import StreamingResponse
+    import json
+    
+    async def event_generator():
+        try:
+            agent = build_agent(req.session_id, req.user_id)
+            async for event in agent.astream({"input": req.message}):
+                # Format as Server-Sent Event
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as e:
+            logger.error(f"Stream error: {e}")
+            error_event = {"type": "error", "content": "Stream failed"}
+            yield f"data: {json.dumps(error_event)}\n\n"
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
+
 @app.get("/sessions/{session_id}/history")
 async def get_history(
     session_id: str,

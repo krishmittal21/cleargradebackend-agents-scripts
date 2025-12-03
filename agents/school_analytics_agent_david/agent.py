@@ -275,6 +275,60 @@ class SchoolAgentWrapper:
                     "error": str(e)
                 }
 
+    async def astream(self, inputs: Dict[str, Any]):
+        """Stream agent responses in real-time."""
+        user_input = inputs.get("input", "").strip()
+        if not user_input:
+            yield {"type": "error", "content": "Please provide a question."}
+            return
+
+        async with get_chat_history(
+            self.session_id,
+            user_id=self.user_id
+        ) as history:
+            try:
+                await history.aadd_user_message(user_input)
+
+                full_output = ""
+                async for event in self.agent_executor.astream_events(
+                    {
+                        "input": user_input,
+                        "chat_history": history.messages
+                    },
+                    version="v1"
+                ):
+                    kind = event.get("event")
+                    
+                    # Stream agent thinking/tool usage
+                    if kind == "on_chat_model_stream":
+                        chunk = event.get("data", {}).get("chunk")
+                        if chunk and hasattr(chunk, "content"):
+                            content = chunk.content
+                            if content:
+                                full_output += content
+                                yield {"type": "token", "content": content}
+                    
+                    # Stream tool calls
+                    elif kind == "on_tool_start":
+                        tool_name = event.get("name", "")
+                        yield {"type": "tool_start", "tool": tool_name}
+                    
+                    elif kind == "on_tool_end":
+                        tool_name = event.get("name", "")
+                        yield {"type": "tool_end", "tool": tool_name}
+
+                # Save the complete response to history
+                if full_output:
+                    await history.aadd_ai_message(full_output)
+                    yield {"type": "done", "content": full_output}
+                else:
+                    # Fallback if no streaming content
+                    yield {"type": "done", "content": "Unable to process request"}
+
+            except Exception as e:
+                logger.error(f"Agent streaming error: {e}", exc_info=True)
+                yield {"type": "error", "content": "I encountered an internal error."}
+
 
 def build_agent(
     session_id: str,
