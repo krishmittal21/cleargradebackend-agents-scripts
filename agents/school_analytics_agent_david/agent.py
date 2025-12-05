@@ -1,9 +1,9 @@
 import logging
 import os
 from typing import Any, Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from langchain_openai import ChatOpenAI
+from langchain_google_vertexai import ChatVertexAI
 from langchain_core.tools import StructuredTool
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
@@ -15,12 +15,7 @@ except ImportError:
 
 from tiaf_api_client import TIAFApiClient
 from memory import get_chat_history
-
-from forecasting_tools import (
-    monte_carlo_simulation_tool,
-    arima_forecast_tool,
-    fee_collection_forecast_tool
-)
+from forecasting import FinancialForecaster
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +47,103 @@ class ValidatedInputs:
 
 def build_tools(client: TIAFApiClient) -> List[StructuredTool]:
     """Build and return async tools for the agent."""
+    forecaster = FinancialForecaster()
+
+    async def revenue_forecast_tool(forecast_months: str) -> str:
+        """
+        Forecast expected revenue for the coming months.
+        Input: Number of months to forecast (1-12), e.g., '6' for 6 months.
+        Returns monthly revenue projections with total expected revenue.
+        """
+        try:
+            months = int(forecast_months.strip())
+            if not (1 <= months <= 12):
+                return "Error: Please specify 1 to 12 months for the forecast."
+            
+            result = await forecaster.generate_business_forecast(
+                metric="revenue",
+                forecast_months=months
+            )
+            
+            if not result.get("success"):
+                return f"Unable to generate forecast: {result.get('error', 'Unknown error')}"
+            
+            # Format as clear text for the LLM
+            output = []
+            output.append(f"**Revenue Forecast for Next {months} Months**\n")
+            output.append(f"Total Expected Revenue: ₹{result['summary']['total_projected']:,.2f}")
+            output.append(f"Monthly Average: ₹{result['summary']['monthly_average']:,.2f}")
+            output.append(f"Trend: {result['summary']['trend'].capitalize()}")
+            output.append(f"Confidence: {result['summary']['confidence'].capitalize()}\n")
+            
+            output.append("**Monthly Breakdown:**")
+            for proj in result["monthly_projections"]:
+                output.append(f"- {proj['month']}: ₹{proj['projected_amount']:,.2f}")
+            
+            output.append(f"\n**Historical Context:**")
+            ctx = result["historical_context"]
+            output.append(f"- Based on {ctx['months_analyzed']} months of data")
+            output.append(f"- Historical monthly average: ₹{ctx['historical_monthly_average']:,.2f}")
+            output.append(f"- Analysis period: {ctx['period']}")
+            
+            if result.get("notes"):
+                output.append(f"\n**Note:** {result['notes']}")
+            
+            return "\n".join(output)
+            
+        except ValueError:
+            return "Error: Please provide a valid number of months (1-12)."
+        except Exception as e:
+            logger.error(f"Error in revenue_forecast_tool: {e}", exc_info=True)
+            return f"Error generating revenue forecast: {str(e)}"
+
+    async def expense_forecast_tool(forecast_months: str) -> str:
+        """
+        Forecast expected expenses for the coming months.
+        Input: Number of months to forecast (1-12), e.g., '6' for 6 months.
+        Returns monthly expense projections with total expected expenses.
+        """
+        try:
+            months = int(forecast_months.strip())
+            if not (1 <= months <= 12):
+                return "Error: Please specify 1 to 12 months for the forecast."
+            
+            result = await forecaster.generate_business_forecast(
+                metric="expense",
+                forecast_months=months
+            )
+            
+            if not result.get("success"):
+                return f"Unable to generate forecast: {result.get('error', 'Unknown error')}"
+            
+            # Format as clear text for the LLM
+            output = []
+            output.append(f"**Expense Forecast for Next {months} Months**\n")
+            output.append(f"Total Expected Expenses: ₹{result['summary']['total_projected']:,.2f}")
+            output.append(f"Monthly Average: ₹{result['summary']['monthly_average']:,.2f}")
+            output.append(f"Trend: {result['summary']['trend'].capitalize()}")
+            output.append(f"Confidence: {result['summary']['confidence'].capitalize()}\n")
+            
+            output.append("**Monthly Breakdown:**")
+            for proj in result["monthly_projections"]:
+                output.append(f"- {proj['month']}: ₹{proj['projected_amount']:,.2f}")
+            
+            output.append(f"\n**Historical Context:**")
+            ctx = result["historical_context"]
+            output.append(f"- Based on {ctx['months_analyzed']} months of data")
+            output.append(f"- Historical monthly average: ₹{ctx['historical_monthly_average']:,.2f}")
+            output.append(f"- Analysis period: {ctx['period']}")
+            
+            if result.get("notes"):
+                output.append(f"\n**Note:** {result['notes']}")
+            
+            return "\n".join(output)
+            
+        except ValueError:
+            return "Error: Please provide a valid number of months (1-12)."
+        except Exception as e:
+            logger.error(f"Error in expense_forecast_tool: {e}", exc_info=True)
+            return f"Error generating expense forecast: {str(e)}"
 
     async def student_list_tool(class_name: str) -> str:
         """Get list of students for a specific class (e.g., 'X SCI')."""
@@ -133,11 +225,36 @@ def build_tools(client: TIAFApiClient) -> List[StructuredTool]:
             logger.error(f"Error in expense_report: {e}")
             return f"Error generating expense report: {str(e)}"
 
+    VALID_CLASSES = [
+        "Nursery", "KG", "I", "II", "III", "IV", "V", "VI", "VII",
+        "VIII", "IX COM", "IX SCI", "X COM", "X SCI", "XI COM",
+        "XI SCI", "XII COM", "XII SCI"
+    ]
+    valid_classes_str = ", ".join(VALID_CLASSES)
+
     return [
+        StructuredTool.from_function(
+            coroutine=revenue_forecast_tool,
+            name="revenue_forecast",
+            description=(
+                "Forecast expected revenue for the coming months. "
+                "Input: number of months (1-12). "
+                "Example: '6' for a 6-month forecast."
+            ),
+        ),
+        StructuredTool.from_function(
+            coroutine=expense_forecast_tool,
+            name="expense_forecast",
+            description=(
+                "Forecast expected expenses for the coming months. "
+                "Input: number of months (1-12). "
+                "Example: '6' for a 6-month forecast."
+            ),
+        ),
         StructuredTool.from_function(
             coroutine=student_list_tool,
             name="student_list",
-            description="Get list of students for a class"
+            description=f"Get list of students for a class. Valid classes: {valid_classes_str}"
         ),
         StructuredTool.from_function(
             coroutine=student_view_tool,
@@ -147,67 +264,91 @@ def build_tools(client: TIAFApiClient) -> List[StructuredTool]:
         StructuredTool.from_function(
             coroutine=fee_report_tool,
             name="fee_report",
-            description="Get fee report for date range 'YYYY-MM-DD to YYYY-MM-DD'"
+            description="Get fee report for date range 'YYYY-MM-DD to YYYY-MM-DD It is only available from 2025-01-01'"
         ),
         StructuredTool.from_function(
             coroutine=expense_report_tool,
             name="expense_report",
             description="Get expense report for date range 'YYYY-MM-DD to YYYY-MM-DD'"
-        ),
-        StructuredTool.from_function(
-            coroutine=monte_carlo_simulation_tool,
-            name="monte_carlo_simulation",
-            description="Perform Monte Carlo simulation for risk analysis and forecasting. Input: JSON with initial_value, expected_return, volatility, time_horizon, num_simulations"
-        ),
-        StructuredTool.from_function(
-            coroutine=arima_forecast_tool,
-            name="arima_forecast",
-            description="Perform ARIMA time series forecasting. Input: JSON with time_series_data (list), forecast_periods, auto_detect, seasonal"
-        ),
-        StructuredTool.from_function(
-            coroutine=fee_collection_forecast_tool,
-            name="fee_collection_forecast",
-            description="Comprehensive fee collection forecasting with ARIMA and Monte Carlo. Input: JSON with historical_fees (list), forecast_months, include_monte_carlo"
-        ),
+        )
     ]
 
 
-def build_llm() -> ChatOpenAI:
-    """Build and configure the LLM."""
-    api_key = os.environ.get("OPENROUTER_API_KEY")
-    if not api_key:
-        raise RuntimeError("Missing OPENROUTER_API_KEY")
+def build_llm() -> ChatVertexAI:
+    """Build and configure the LLM with Gemini (1M token context)."""
+    project_id = os.environ.get("GOOGLE_CLOUD_PROJECT", "clearmarks")
+    location = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
 
-    base_url = os.environ.get(
-        "OPENROUTER_BASE_URL",
-        "https://openrouter.ai/api/v1"
-    )
-    model = os.environ.get(
-        "OPENROUTER_MODEL",
-        "google/gemini-2.0-flash-exp:free"
-    )
+    if not project_id:
+        raise RuntimeError("Missing GOOGLE_CLOUD_PROJECT environment variable")
 
-    headers = {}
-    if os.environ.get("OPENROUTER_SITE_URL"):
-        headers["HTTP-Referer"] = os.environ["OPENROUTER_SITE_URL"]
-
-    return ChatOpenAI(
-        api_key=api_key,
-        base_url=base_url,
-        model=model,
+    return ChatVertexAI(
+        project=project_id,
+        location=location,
+        model_name="gemini-2.5-flash",
         temperature=0,
-        max_tokens=2000,
-        default_headers=headers,
+        max_tokens=8000,
     )
 
 
-SYSTEM_PROMPT_TEXT = """You are David, an intelligent School Business & Analytics Assistant.
+SYSTEM_PROMPT_TEXT = """You are David, a Strategic School Business Advisor with deep expertise in educational institution management, financial planning, and operational optimization.
 
-YOUR GUIDELINES:
-1. ALWAYS be accurate with dates, numbers, and student information.
-2. Use the available tools to fetch real data.
-3. For financial queries, provide context.
-4. Current Date: {current_date}
+YOUR CORE MANDATE:
+Act as a strategic partner who not only provides data but interprets it, identifies opportunities/risks, and recommends specific actions to improve the school's financial health and operational efficiency.
+
+STRATEGIC CAPABILITIES:
+
+1. FINANCIAL INTELLIGENCE
+   - Analyze cash flow patterns and predict liquidity needs
+   - Identify cost optimization opportunities with estimated savings
+   - Recommend fee structure adjustments based on collection trends
+   - Flag financial risks before they become critical
+
+2. ENROLLMENT & REVENUE MANAGEMENT
+   - Detect enrollment trends and recommend retention strategies
+   - Suggest optimal timing for fee campaigns based on historical data
+   - Identify classes with high default rates and propose interventions
+   - Project revenue shortfalls and recommend corrective actions
+
+3. OPERATIONAL EXCELLENCE
+   - Benchmark expenses against industry standards
+   - Recommend budget reallocation for maximum impact
+   - Identify seasonal patterns and suggest resource planning
+   - Propose data-driven policies for fee collection
+
+EXAMPLE APPROACH:
+Instead of: "Fee collection decreased 15% this month"
+Say: "Fee collection dropped 15% (₹45,000) this month vs last month, primarily in Class IX & X. This creates a ₹1.2L quarterly shortfall risk. 
+
+RECOMMENDATIONS (Prioritized):
+1. **Immediate**: Send targeted reminders to 12 defaulters in IX SCI (₹28,000 at risk)
+2. **This Week**: Offer 2% early-bird discount for next quarter payments (could boost cash flow by ₹80K)
+3. **Strategic**: Review fee structure for Classes IX-XII - collection rates 20% below school average"
+
+BUSINESS CONTEXT TO APPLY:
+- Healthy schools maintain <5% monthly fee default rates
+- Optimal expense-to-revenue ratio: 65-75%
+- Fee collection should peak within first 10 days of due date
+- Nursery-KG typically have highest retention; IX-XII have highest defaults
+- Major expenses: Salaries (60-70%), Facilities (15-20%), Supplies (5-10%)
+
+TOOL USAGE GUIDELINES:
+- For financial questions: Use BOTH revenue and expense forecasts to give net cash flow view
+- For student issues: Cross-reference enrollment data with fee reports to identify at-risk accounts
+- Always validate date ranges and class names before querying
+- If data seems incomplete, state limitations and request clarification
+
+CURRENT DATE: {current_date}
+
+COMMUNICATION RULES:
+- NO emojis or HTML tags
+- Use bold headers (**) for sections
+- Use markdown for formatting
+- Use markdown for tables and prefer using tables to represent data
+- Quantify everything in rupees (₹) and percentages
+- Be direct and action-oriented
+- Ask clarifying questions when needed to give better recommendations
+- If you lack sufficient data, recommend what information to gather
 """
 
 
