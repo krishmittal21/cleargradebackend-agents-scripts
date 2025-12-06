@@ -4,6 +4,7 @@ langchain==0.3.7
 langchain-community==0.3.7
 langchain-core==0.3.19
 langchain-google-vertexai>=2.0.0
+langsmith>=0.1.0
 google-cloud-firestore>=2.19.0
 httpx>=0.26.0
 requests>=2.31.0
