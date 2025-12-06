@@ -3,9 +3,10 @@ import os
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
 
-from langchain_google_vertexai import ChatVertexAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.tools import StructuredTool
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import BaseMessage, ToolMessage
 
 try:
     from langchain.agents import AgentExecutor, create_tool_calling_agent
@@ -274,20 +275,14 @@ def build_tools(client: TIAFApiClient) -> List[StructuredTool]:
     ]
 
 
-def build_llm() -> ChatVertexAI:
+def build_llm() -> ChatGoogleGenerativeAI:
     """Build and configure the LLM with Gemini (1M token context)."""
-    project_id = os.environ.get("GOOGLE_CLOUD_PROJECT", "clearmarks")
-    location = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
-
-    if not project_id:
-        raise RuntimeError("Missing GOOGLE_CLOUD_PROJECT environment variable")
-
-    return ChatVertexAI(
-        project=project_id,
-        location=location,
-        model_name="gemini-2.5-flash",
+    return ChatGoogleGenerativeAI(
+        model="gemini-3-pro-preview",
         temperature=0,
-        max_tokens=8000,
+        max_tokens=None,
+        timeout=None,
+        max_retries=2
     )
 
 
@@ -373,10 +368,33 @@ class SchoolAgentWrapper:
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
 
-        self.agent = create_tool_calling_agent(
-            self.llm,
-            self.tools,
-            self.prompt
+
+        # Custom scratchpad formatter to ensure tool names are present
+        def format_scratchpad_safe(intermediate_steps: List[tuple[Any, str]]) -> List[BaseMessage]:
+            messages = []
+            for action, observation in intermediate_steps:
+                messages.append(ToolMessage(
+                    tool_call_id=action.tool_call_id,
+                    content=str(observation),
+                    name=action.tool
+                ))
+            return messages
+
+        # Bind tools to LLM
+        llm_with_tools = self.llm.bind_tools(self.tools)
+
+        # Create the agent chain manually to use safe scratchpad
+        from langchain.agents.output_parsers.tools import ToolsAgentOutputParser
+        from langchain_core.runnables import RunnablePassthrough
+        from langchain_core.messages import ToolMessage
+        
+        self.agent = (
+            RunnablePassthrough.assign(
+                agent_scratchpad=lambda x: format_scratchpad_safe(x["intermediate_steps"])
+            )
+            | self.prompt
+            | llm_with_tools
+            | ToolsAgentOutputParser()
         )
 
         self.agent_executor = AgentExecutor(
