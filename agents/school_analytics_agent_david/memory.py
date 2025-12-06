@@ -134,6 +134,45 @@ class AsyncFirestoreChatMessageHistory(BaseChatMessageHistory):
                 except GoogleAPICallError as e:
                     logger.error(f"Error clearing messages: {e}")
 
+    async def add_feedback(
+        self,
+        message_index: int,
+        rating: str,
+        reason: Optional[str] = None
+    ) -> None:
+        """Add feedback to a specific message."""
+        if not self._db:
+            return
+
+        async with self._lock:
+            try:
+                doc_ref = self._doc_ref()
+                doc = await doc_ref.get()
+
+                if not doc.exists:
+                    logger.error("Document does not exist for feedback")
+                    return
+
+                data = doc.to_dict() or {}
+                items = data.get("messages", [])
+
+                if message_index < 0 or message_index >= len(items):
+                    logger.error(f"Invalid message index: {message_index}")
+                    return
+
+                # Add feedback to the message
+                items[message_index]["feedback"] = {
+                    "rating": rating,
+                    "reason": reason,
+                    "submittedAt": datetime.utcnow().isoformat(),
+                }
+
+                # Update the document
+                await doc_ref.update({"messages": items})
+
+            except GoogleAPICallError as e:
+                logger.error(f"Error adding feedback: {e}")
+
     async def _persist_one(self, message: BaseMessage) -> None:
         """Persist a single message."""
         if not self._db:

@@ -15,3 +15,6 @@ statsmodels>=0.14.0
 pmdarima    
 scipy
 prophet
+google-cloud-speech>=2.23.0
+google-cloud-texttospeech>=2.16.0
+websockets>=12.0

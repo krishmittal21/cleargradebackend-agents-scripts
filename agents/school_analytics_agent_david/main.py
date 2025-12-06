@@ -1,17 +1,18 @@
 import logging
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query
 from pydantic import BaseModel, Field
 from typing import Dict, Any
 
 from agent import build_agent
+from voice_handler import websocket_voice_handler
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="School Business Agent",
-    description="AI-powered school management and analytics",
-    version="2.0",
+    description="AI-powered school management and analytics with voice support",
+    version="2.1",
 )
 
 
@@ -26,6 +27,11 @@ class ChatResponse(BaseModel):
     output: str
     session_id: str
     user_id: str
+
+
+class FeedbackRequest(BaseModel):
+    rating: str = Field(..., description="Feedback rating: 'good' or 'bad'")
+    reason: str | None = Field(None, description="Optional reason for negative feedback")
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -148,7 +154,79 @@ async def clear_session(
         raise HTTPException(status_code=500, detail="Clear failed")
 
 
+@app.post("/sessions/{session_id}/messages/{message_index}/feedback")
+async def submit_feedback(
+    session_id: str,
+    message_index: int,
+    feedback: FeedbackRequest,
+    user_id: str
+) -> Dict[str, str]:
+    """Submit feedback for a specific message."""
+    try:
+        from memory import get_chat_history
+
+        if feedback.rating not in ["good", "bad"]:
+            raise HTTPException(status_code=400, detail="Invalid rating")
+
+        async with get_chat_history(session_id, user_id=user_id) as history:
+            await history.add_feedback(
+                message_index=message_index,
+                rating=feedback.rating,
+                reason=feedback.reason
+            )
+            return {
+                "status": "feedback_submitted",
+                "session_id": session_id,
+                "message_index": str(message_index),
+                "rating": feedback.rating
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Feedback error: {e}")
+        raise HTTPException(status_code=500, detail="Feedback submission failed")
+
+
 @app.get("/health")
 async def health() -> Dict[str, str]:
     """Health check."""
     return {"status": "healthy"}
+
+
+@app.websocket("/voice")
+async def voice_endpoint(
+    websocket: WebSocket,
+    session_id: str = Query(..., description="Session ID"),
+    user_id: str = Query(..., description="User ID")
+):
+    """
+    Real-time voice conversation endpoint.
+    
+    Connect via WebSocket with query params: ?session_id=xxx&user_id=yyy
+    
+    Protocol:
+    - Send: {"type": "audio", "data": "<base64 PCM audio>"}
+    - Send: {"type": "end_audio"} when done speaking
+    - Receive: {"type": "status", "state": "transcribing|thinking|speaking|idle"}
+    - Receive: {"type": "transcript", "text": "<user's speech>"}
+    - Receive: {"type": "response", "text": "<David's response>"}
+    - Receive: {"type": "audio", "data": "<base64 PCM audio>", "sampleRate": 24000, "isLast": bool}
+    """
+    await websocket.accept()
+    logger.info(f"Voice connection opened: session={session_id}, user={user_id}")
+    
+    try:
+        await websocket_voice_handler(
+            websocket=websocket,
+            session_id=session_id,
+            user_id=user_id,
+            agent_builder=build_agent
+        )
+    except WebSocketDisconnect:
+        logger.info(f"Voice connection closed: session={session_id}")
+    except Exception as e:
+        logger.error(f"Voice endpoint error: {e}")
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except:
+            pass
