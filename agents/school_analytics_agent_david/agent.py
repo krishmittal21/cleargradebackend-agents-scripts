@@ -20,6 +20,62 @@ from forecasting import FinancialForecaster
 
 logger = logging.getLogger(__name__)
 
+# Summarizer LLM for condensing large tool responses
+_summarizer_llm = None
+
+def get_summarizer_llm():
+    """Get or create the summarizer LLM (lazily initialized)."""
+    global _summarizer_llm
+    if _summarizer_llm is None:
+        _summarizer_llm = ChatGoogleGenerativeAI(
+            model="gemini-2.0-flash",
+            temperature=0,
+            max_tokens=8000
+        )
+    return _summarizer_llm
+
+
+async def summarize_tool_response(
+    raw_response: str,
+    tool_name: str,
+    max_length: int = 8000
+) -> str:
+    """
+    Summarize large tool responses to prevent context window overflow.
+    
+    Preserves all key numbers, totals, and patterns while reducing verbosity.
+    Only summarizes if response exceeds max_length.
+    """
+    if len(raw_response) < max_length:
+        return raw_response
+    
+    try:
+        summarizer = get_summarizer_llm()
+        
+        prompt = f"""You are a data summarizer for a school business analytics system.
+Summarize this {tool_name} data concisely while PRESERVING:
+- All monetary totals and key figures
+- Important patterns and trends
+- Critical dates and time periods
+- Any warnings or errors
+
+Keep the format clean and structured. Use tables where appropriate.
+Do NOT add analysis or recommendations - just present the key data.
+
+DATA TO SUMMARIZE:
+{raw_response}
+"""
+        
+        result = await summarizer.ainvoke(prompt)
+        summary = result.content if hasattr(result, 'content') else str(result)
+        
+        return f"[Data summarized from {len(raw_response):,} chars]\n\n{summary}"
+        
+    except Exception as e:
+        logger.warning(f"Summarization failed for {tool_name}: {e}")
+        # Fallback: truncate with notice
+        return f"[Data truncated due to size - {len(raw_response):,} chars]\n\n{raw_response[:max_length]}..."
+
 
 class ValidatedInputs:
     """Input validation utilities"""
@@ -158,7 +214,8 @@ def build_tools(client: TIAFApiClient) -> List[StructuredTool]:
             result = await client.student_list(class_name.strip())
             if not result.get("success"):
                 return f"Failed to fetch students: {result.get('error')}"
-            return str(result)
+            raw_response = str(result)
+            return await summarize_tool_response(raw_response, "student_list")
         except Exception as e:
             logger.error(f"Error in student_list: {e}")
             return f"Error fetching students: {str(e)}"
@@ -199,7 +256,8 @@ def build_tools(client: TIAFApiClient) -> List[StructuredTool]:
             result = await client.fee_report(from_date, to_date)
             if not result.get("success"):
                 return f"Failed to generate report: {result.get('error')}"
-            return str(result)
+            raw_response = str(result)
+            return await summarize_tool_response(raw_response, "fee_report")
         except Exception as e:
             logger.error(f"Error in fee_report: {e}")
             return f"Error generating fee report: {str(e)}"
@@ -221,7 +279,8 @@ def build_tools(client: TIAFApiClient) -> List[StructuredTool]:
             result = await client.expense_report(from_date, to_date)
             if not result.get("success"):
                 return f"Failed to generate report: {result.get('error')}"
-            return str(result)
+            raw_response = str(result)
+            return await summarize_tool_response(raw_response, "expense_report")
         except Exception as e:
             logger.error(f"Error in expense_report: {e}")
             return f"Error generating expense report: {str(e)}"
@@ -286,7 +345,7 @@ def build_llm() -> ChatGoogleGenerativeAI:
     )
 
 
-SYSTEM_PROMPT_TEXT = """You are David, a Strategic School Business Advisor with deep expertise in educational institution management, financial planning, and operational optimization.
+SYSTEM_PROMPT_TEXT = """You are David trained and made by ClearGrade, a Strategic School Business Advisor with 15 years of experience working with educational institutions across India. You started your career as a school administrator in Mumbai, where you developed a passion for using data to help schools thrive. Over the years, you've advised dozens of schools - from small private institutions to large CBSE and ICSE chains - on financial planning, enrollment optimization, and operational efficiency. You're known for being direct, practical, and always backing your recommendations with data.
 
 YOUR CORE MANDATE:
 Act as a strategic partner who not only provides data but interprets it, identifies opportunities/risks, and recommends specific actions to improve the school's financial health and operational efficiency.
@@ -344,6 +403,7 @@ COMMUNICATION RULES:
 - Be direct and action-oriented
 - Ask clarifying questions when needed to give better recommendations
 - If you lack sufficient data, recommend what information to gather
+- When asked about yourself, share your professional background but stay focused on helping with their school's needs
 """
 
 
