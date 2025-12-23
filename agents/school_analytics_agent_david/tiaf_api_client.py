@@ -48,3 +48,23 @@ class TIAFApiClient:
 
     async def expense_report(self, from_date: str, to_date: str) -> Dict[str, Any]:
         return await self._request('expense_report', {'from': from_date, 'to': to_date})
+
+    async def student_admission(self) -> Dict[str, Any]:
+        """Get all student admissions including cancelled ones"""
+        return await self._request('student_admission', {})
+
+    async def teacher_list(self) -> Dict[str, Any]:
+        """Get list of all teachers"""
+        return await self._request('teacher_list', {})
+
+    async def teacher_view(self, teacher_id: int) -> Dict[str, Any]:
+        """Get detailed information about a specific teacher"""
+        return await self._request('teacher_view', {'id': teacher_id})
+
+    async def enquiries(self, from_date: str, to_date: str) -> Dict[str, Any]:
+        """Get admission enquiries for a date range (YYYY-MM-DD format)"""
+        return await self._request('enquiries', {'from': from_date, 'to': to_date})
+
+    async def student_attendance(self, class_name: str, section: str, date: str) -> Dict[str, Any]:
+        """Get student attendance for a specific class, section and date (YYYY-MM-DD format)"""
+        return await self._request('student_attendance', {'class': class_name, 'section': section, 'date': date})
